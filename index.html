@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Трансляция из Discord</title>
+</head>
+<body>
+    <h1>🎧 Слушаем трансляцию из Discord</h1>
+    <button onclick="connect()">Подключиться</button>
+    <div id="status"></div>
+    <audio id="audio" controls autoplay></audio>
+    <script>
+        let ws;
+        function connect() {
+            ws = new WebSocket('wss://' + location.host + '/ws');
+            ws.onopen = () => document.getElementById('status').innerText = 'Подключено';
+            ws.onmessage = (e) => {
+                const data = JSON.parse(e.data);
+                if (data.type === 'audio') {
+                    const binary = atob(data.data);
+                    const bytes = new Uint8Array(binary.length);
+                    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+                    const blob = new Blob([bytes], { type: 'audio/wav' });
+                    document.getElementById('audio').src = URL.createObjectURL(blob);
+                }
+            };
+            ws.onclose = () => document.getElementById('status').innerText = 'Отключено';
+        }
+    </script>
+</body>
+</html>
