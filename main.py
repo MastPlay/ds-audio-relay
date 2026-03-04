@@ -7,6 +7,7 @@ import os
 import sys
 import logging
 import ctypes.util
+import discord.voice_client
 from aiohttp import web
 
 # Настройка логирования (вывод в stdout Render)
@@ -32,28 +33,15 @@ async def on_ready():
     logger.info(f'✅ Бот {bot.user} запущен')
     logger.info(f'Discord.py версия: {discord.__version__}')
     
-    # 1. Пытаемся найти libopus стандартными средствами
+    # 1. Поиск библиотеки opus
     opus_path = ctypes.util.find_library('opus')
     if opus_path:
         logger.info(f"Найдена библиотека opus по пути: {opus_path}")
     else:
-        logger.warning("Библиотека opus не найдена через find_library, пробуем стандартные пути")
-        # Стандартные пути в Debian/Ubuntu
-        possible_paths = [
-            '/usr/lib/x86_64-linux-gnu/libopus.so.0',
-            '/usr/local/lib/libopus.so.0',
-            '/usr/lib/libopus.so.0'
-        ]
-        for path in possible_paths:
-            if os.path.exists(path):
-                opus_path = path
-                logger.info(f"Найдена библиотека opus по пути: {opus_path}")
-                break
+        logger.warning("Библиотека opus не найдена через find_library")
     
-    # 2. Проверяем, загружен ли Opus
-    if discord.opus.is_loaded():
-        logger.info("Opus уже загружен")
-    else:
+    # 2. Загрузка Opus
+    if not discord.opus.is_loaded():
         logger.error("Opus не загружен! Пытаемся загрузить вручную...")
         if opus_path:
             try:
@@ -65,16 +53,32 @@ async def on_ready():
             except Exception as e:
                 logger.error(f"Ошибка при загрузке Opus: {e}")
         else:
-            logger.error("Библиотека opus не найдена в системе. Голос работать не будет.")
+            logger.error("Бибрария opus не найдена в системе. Голос работать не будет.")
+    else:
+        logger.info("Opus уже загружен")
     
-    # 3. Проверяем наличие метода listen
+    # 3. Принудительный импорт голосового модуля
+    try:
+        from discord import voice_client
+        logger.info("Модуль discord.voice_client импортирован")
+        vc_class = voice_client.VoiceClient
+        has_listen = hasattr(vc_class, 'listen')
+        logger.info(f"voice_client.VoiceClient.listen существует? {has_listen}")
+        if has_listen:
+            logger.info("Метод listen найден в voice_client.VoiceClient")
+        else:
+            logger.warning("Метод listen не найден в voice_client.VoiceClient")
+    except ImportError as e:
+        logger.error(f"Не удалось импортировать discord.voice_client: {e}")
+    
+    # 4. Проверка через discord.VoiceClient
     vc_class = discord.VoiceClient
     has_listen = hasattr(vc_class, 'listen')
-    logger.info(f"Есть ли метод listen у VoiceClient? {has_listen}")
-    if has_listen:
-        logger.info("Метод listen существует.")
-    else:
-        logger.warning("Метод listen НЕ найден в VoiceClient!")
+    logger.info(f"Есть ли метод listen у discord.VoiceClient? {has_listen}")
+    if not has_listen:
+        # Выведем все атрибуты для отладки
+        attrs = [attr for attr in dir(vc_class) if not attr.startswith('_')]
+        logger.info(f"Атрибуты discord.VoiceClient: {attrs}")
     
     logger.info(f'Подключен к гильдиям: {[g.name for g in bot.guilds]}')
 
