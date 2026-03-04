@@ -40,12 +40,14 @@ client.on(Events.MessageCreate, async (message) => {
 
     try {
       const connection = joinVoiceChannel({
-        channelId: voiceChannel.id,
-        guildId: voiceChannel.guild.id,
-        adapterCreator: voiceChannel.guild.voiceAdapterCreator,
+  	channelId: voiceChannel.id,
+  	guildId: voiceChannel.guild.id,
+  	adapterCreator: voiceChannel.guild.voiceAdapterCreator,
+  	selfDeaf: false,   // бот не глушит себя
+  	selfMute: false,   // бот не отключает микрофон (даже для приёма это важно)
       });
 
-      await entersState(connection, VoiceConnectionStatus.Ready, 10_000);
+      await entersState(connection, VoiceConnectionStatus.Ready, 20_000);
       console.log(`Подключился к каналу ${voiceChannel.name}`);
 
       const receiver = connection.receiver;
