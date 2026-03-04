@@ -6,6 +6,7 @@ import json
 import os
 import sys
 import logging
+import ctypes.util
 from aiohttp import web
 
 # Настройка логирования (вывод в stdout Render)
@@ -31,19 +32,42 @@ async def on_ready():
     logger.info(f'✅ Бот {bot.user} запущен')
     logger.info(f'Discord.py версия: {discord.__version__}')
     
-    # Проверка загрузки Opus
-    if discord.opus.is_loaded():
-        logger.info("Opus loaded successfully")
+    # 1. Пытаемся найти libopus стандартными средствами
+    opus_path = ctypes.util.find_library('opus')
+    if opus_path:
+        logger.info(f"Найдена библиотека opus по пути: {opus_path}")
     else:
-        logger.error("Opus NOT loaded! Voice will not work.")
-        # Попробуем загрузить вручную
-        try:
-            discord.opus.load_opus('libopus.so.0')
-            logger.info("Opus manually loaded")
-        except Exception as e:
-            logger.error(f"Failed to load opus manually: {e}")
+        logger.warning("Библиотека opus не найдена через find_library, пробуем стандартные пути")
+        # Стандартные пути в Debian/Ubuntu
+        possible_paths = [
+            '/usr/lib/x86_64-linux-gnu/libopus.so.0',
+            '/usr/local/lib/libopus.so.0',
+            '/usr/lib/libopus.so.0'
+        ]
+        for path in possible_paths:
+            if os.path.exists(path):
+                opus_path = path
+                logger.info(f"Найдена библиотека opus по пути: {opus_path}")
+                break
     
-    # Проверим наличие метода listen у VoiceClient
+    # 2. Проверяем, загружен ли Opus
+    if discord.opus.is_loaded():
+        logger.info("Opus уже загружен")
+    else:
+        logger.error("Opus не загружен! Пытаемся загрузить вручную...")
+        if opus_path:
+            try:
+                discord.opus.load_opus(opus_path)
+                if discord.opus.is_loaded():
+                    logger.info("Opus успешно загружен вручную")
+                else:
+                    logger.error("Не удалось загрузить Opus даже после ручной загрузки")
+            except Exception as e:
+                logger.error(f"Ошибка при загрузке Opus: {e}")
+        else:
+            logger.error("Библиотека opus не найдена в системе. Голос работать не будет.")
+    
+    # 3. Проверяем наличие метода listen
     vc_class = discord.VoiceClient
     has_listen = hasattr(vc_class, 'listen')
     logger.info(f"Есть ли метод listen у VoiceClient? {has_listen}")
