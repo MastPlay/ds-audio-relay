@@ -47,8 +47,19 @@ client.on(Events.MessageCreate, async (message) => {
   	selfMute: false,   // бот не отключает микрофон (даже для приёма это важно)
       });
 
-      await entersState(connection, VoiceConnectionStatus.Ready, 20_000);
-      console.log(`Подключился к каналу ${voiceChannel.name}`);
+      connection.on('error', (error) => {
+  	console.error('Ошибка внутри соединения:', error);
+      });
+
+	try {
+  		// Увеличьте таймаут до 20 секунд для теста
+  		await entersState(connection, VoiceConnectionStatus.Ready, 20_000);
+  		console.log("✅ Соединение установлено и готово к работе");
+	} catch (error) {
+  		connection.destroy();
+  		console.error('Ошибка таймаута:', error);
+  		return message.reply('❌ Не удалось дождаться готовности (проблема с UDP/сетью)');
+	}
 
       const receiver = connection.receiver;
 
