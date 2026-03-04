@@ -1,91 +1,35 @@
 import discord
-from discord.ext import commands
+from discord.ext import commands, voice_recv
 import asyncio
 import base64
 import json
 import os
 import sys
 import logging
-import ctypes.util
-import discord.voice_client
 from aiohttp import web
 
-# Настройка логирования (вывод в stdout Render)
+# Настройка логирования
 logging.basicConfig(level=logging.INFO, stream=sys.stdout,
                     format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 TOKEN = os.environ.get('BOT_TOKEN')
-WEBSOCKET_PORT = int(os.environ.get('PORT', 8080))  # Render сам подставляет PORT
+WEBSOCKET_PORT = int(os.environ.get('PORT', 8080))
 
-# --- 1. Создаём объект бота (ВАЖНО: до всех декораторов) ---
 intents = discord.Intents.default()
 intents.message_content = True
 intents.voice_states = True
+
 bot = commands.Bot(command_prefix='!', intents=intents)
+connections = {}
+listener_websockets = set()
 
-connections = {}          # активные подключения к голосовым каналам
-listener_websockets = set()  # все активные веб-сокеты слушателей
-
-# --- 2. События и команды бота ---
+# ----- Discord часть -----
 @bot.event
 async def on_ready():
     logger.info(f'✅ Бот {bot.user} запущен')
     logger.info(f'Discord.py версия: {discord.__version__}')
-    
-    # 1. Поиск библиотеки opus
-    opus_path = ctypes.util.find_library('opus')
-    if opus_path:
-        logger.info(f"Найдена библиотека opus по пути: {opus_path}")
-    else:
-        logger.warning("Библиотека opus не найдена через find_library")
-    
-    # 2. Загрузка Opus
-    if not discord.opus.is_loaded():
-        logger.error("Opus не загружен! Пытаемся загрузить вручную...")
-        if opus_path:
-            try:
-                discord.opus.load_opus(opus_path)
-                if discord.opus.is_loaded():
-                    logger.info("Opus успешно загружен вручную")
-                else:
-                    logger.error("Не удалось загрузить Opus даже после ручной загрузки")
-            except Exception as e:
-                logger.error(f"Ошибка при загрузке Opus: {e}")
-        else:
-            logger.error("Бибрария opus не найдена в системе. Голос работать не будет.")
-    else:
-        logger.info("Opus уже загружен")
-    
-    # 3. Принудительный импорт голосового модуля
-    try:
-        from discord import voice_client
-        logger.info("Модуль discord.voice_client импортирован")
-        vc_class = voice_client.VoiceClient
-        has_listen = hasattr(vc_class, 'listen')
-        logger.info(f"voice_client.VoiceClient.listen существует? {has_listen}")
-        if has_listen:
-            logger.info("Метод listen найден в voice_client.VoiceClient")
-        else:
-            logger.warning("Метод listen не найден в voice_client.VoiceClient")
-    except ImportError as e:
-        logger.error(f"Не удалось импортировать discord.voice_client: {e}")
-    
-    # 4. Проверка через discord.VoiceClient
-    vc_class = discord.VoiceClient
-    has_listen = hasattr(vc_class, 'listen')
-    logger.info(f"Есть ли метод listen у discord.VoiceClient? {has_listen}")
-    if not has_listen:
-        # Выведем все атрибуты для отладки
-        attrs = [attr for attr in dir(vc_class) if not attr.startswith('_')]
-        logger.info(f"Атрибуты discord.VoiceClient: {attrs}")
-    
     logger.info(f'Подключен к гильдиям: {[g.name for g in bot.guilds]}')
-
-@bot.event
-async def on_command_error(ctx, error):
-    logger.error(f'Ошибка команды: {error}')
-    await ctx.send(f"❌ Ошибка: {error}")
 
 async def send_to_listeners(msg):
     """Отправить сообщение всем слушателям."""
@@ -102,42 +46,39 @@ async def send_to_listeners(msg):
     for ws in to_remove:
         listener_websockets.discard(ws)
 
+# Функция, которая будет вызываться для каждого аудиопакета
+def audio_callback(user, data):
+    # data — это байты PCM (или Opus, но BasicSink отдаёт PCM)
+    # Отправляем слушателям
+    b64 = base64.b64encode(data).decode()
+    msg = json.dumps({"type": "audio", "data": b64})
+    asyncio.create_task(send_to_listeners(msg))
+
 @bot.command(name='join')
 async def join(ctx):
-    logger.info(f"Команда join от {ctx.author} в канале {ctx.channel}")
+    logger.info(f"Команда join от {ctx.author}")
     if not ctx.author.voice:
-        logger.warning("Пользователь не в голосовом канале")
         await ctx.send("❌ Ты не в голосовом канале!")
         return
 
     channel = ctx.author.voice.channel
-    logger.info(f"Попытка подключиться к каналу {channel.name} (ID: {channel.id})")
+    logger.info(f"Попытка подключиться к каналу {channel.name}")
 
     try:
-        vc = await channel.connect()
+        # Подключаемся с использованием VoiceRecvClient
+        vc = await channel.connect(cls=voice_recv.VoiceRecvClient)
         connections[ctx.guild.id] = vc
-        logger.info(f"✅ Подключился к каналу {channel.name}")
 
-        # Проверяем, есть ли метод listen (должен быть в discord.py 2.x)
-        if not hasattr(vc, 'listen'):
-            await ctx.send("❌ Метод listen не найден. Убедитесь, что discord.py[voice]==2.3.2 установлен и голосовая поддержка работает.")
-            return
+        # Создаём синк, который вызывает нашу функцию при получении данных
+        sink = voice_recv.BasicSink(audio_callback)
+        vc.listen(sink)
 
-        # Колбэк для аудиопакетов
-        def audio_callback(data):
-            packet = data.packet
-            logger.debug(f"Получен аудиопакет от {data.user} размером {len(packet)} байт")
-            b64 = base64.b64encode(packet).decode()
-            msg = json.dumps({"type": "audio", "data": b64})
-            asyncio.create_task(send_to_listeners(msg))
-
-        vc.listen(audio_callback)
-        logger.info("🎤 Начато прослушивание голосового канала")
         await ctx.send(f"🎤 Трансляция из {channel.name} начата (в реальном времени)")
+        logger.info(f"Трансляция начата в канале {channel.name}")
 
     except Exception as e:
-        logger.exception("Ошибка при подключении к голосовому каналу")
-        await ctx.send(f"❌ Не удалось подключиться: {e}")
+        logger.exception("Ошибка в join")
+        await ctx.send(f"❌ Ошибка: {e}")
 
 @bot.command(name='stop')
 async def stop(ctx):
@@ -146,23 +87,19 @@ async def stop(ctx):
         vc.stop_listening()
         await vc.disconnect()
         del connections[ctx.guild.id]
-        logger.info(f"🛑 Трансляция остановлена в гильдии {ctx.guild.id}")
         await ctx.send("🛑 Трансляция остановлена")
     else:
         await ctx.send("❌ Я сейчас не транслирую")
 
-# --- 3. Веб-сервер для слушателей ---
+# ----- Веб-сервер часть -----
 async def websocket_handler(request):
     ws = web.WebSocketResponse()
     await ws.prepare(request)
     listener_websockets.add(ws)
-    logger.info(f"Новый слушатель подключился, всего: {len(listener_websockets)}")
+    logger.info(f"Новый слушатель, всего: {len(listener_websockets)}")
     try:
         async for msg in ws:
-            # от клиента ничего не ждём
             pass
-    except Exception as e:
-        logger.error(f"Ошибка WebSocket: {e}")
     finally:
         listener_websockets.discard(ws)
         logger.info(f"Слушатель отключился, осталось: {len(listener_websockets)}")
