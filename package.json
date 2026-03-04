@@ -1,0 +1,15 @@
+{
+  "name": "discord-audio-relay",
+  "version": "1.0.0",
+  "main": "bot.js",
+  "scripts": {
+    "start": "node bot.js"
+  },
+  "dependencies": {
+    "discord.js": "^14.14.1",
+    "@discordjs/voice": "^0.16.1",
+    "ws": "^8.14.2",
+    "express": "^4.18.2",
+    "libsodium-wrappers": "^0.7.13"
+  }
+}
