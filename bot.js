@@ -1,22 +1,19 @@
 const { Client, GatewayIntentBits, Events } = require('discord.js');
-const { joinVoiceChannel, createAudioPlayer, createAudioResource, getVoiceConnection, AudioPlayerStatus, VoiceConnectionStatus, entersState } = require('@discordjs/voice');
+const { joinVoiceChannel, getVoiceConnection, entersState, VoiceConnectionStatus } = require('@discordjs/voice');
 const WebSocket = require('ws');
 const express = require('express');
 const http = require('http');
-const { pipeline } = require('stream');
-const prism = require('prism-media'); // для декодирования Opus
+const prism = require('prism-media');
 
 const TOKEN = process.env.BOT_TOKEN;
 const WS_PORT = process.env.PORT || 8080;
 
-// HTTP + WebSocket сервер
 const app = express();
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
 let listeners = new Set();
 
-// Discord клиент
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -49,39 +46,34 @@ client.on(Events.MessageCreate, async (message) => {
       });
 
       await entersState(connection, VoiceConnectionStatus.Ready, 10_000);
+      console.log(`Подключился к каналу ${voiceChannel.name}`);
+
       const receiver = connection.receiver;
 
       receiver.speaking.on('start', (userId) => {
         const user = client.users.cache.get(userId);
-        console.log(`🔊 ${user?.tag || userId} начал говорить`);
+        console.log(`🔊 ${user?.tag || userId} говорит`);
 
-        const opusStream = receiver.subscribe(userId, {
-          end: { behavior: 'manual' },
-        });
-
-        // Декодируем Opus в PCM
+        const opusStream = receiver.subscribe(userId, { end: { behavior: 'manual' } });
         const decoder = new prism.opus.Decoder({ frameSize: 960, channels: 2, rate: 48000 });
-        pipeline(opusStream, decoder, (err) => {
-          if (err) console.error('Pipeline error:', err);
-        });
+
+        opusStream.pipe(decoder);
 
         decoder.on('data', (chunk) => {
-          const audioData = chunk.toString('base64');
-          const msg = JSON.stringify({ type: 'audio', data: audioData });
+          const base64 = chunk.toString('base64');
+          const msg = JSON.stringify({ type: 'audio', data: base64 });
           listeners.forEach(ws => {
             if (ws.readyState === WebSocket.OPEN) ws.send(msg);
           });
         });
 
-        decoder.on('end', () => {
-          console.log(`Поток от ${userId} завершён`);
-        });
+        decoder.on('end', () => console.log(`Поток от ${userId} завершён`));
       });
 
-      message.reply(`🎤 Начинаю трансляцию из ${voiceChannel.name}`);
+      message.reply(`🎤 Трансляция из ${voiceChannel.name} начата`);
     } catch (err) {
       console.error('Ошибка подключения:', err);
-      message.reply('❌ Не удалось подключиться к голосовому каналу');
+      message.reply(`❌ Не удалось подключиться: ${err.message}`);
     }
   }
 
@@ -96,7 +88,6 @@ client.on(Events.MessageCreate, async (message) => {
   }
 });
 
-// WebSocket для слушателей
 wss.on('connection', (ws) => {
   listeners.add(ws);
   console.log('👂 Новый слушатель, всего:', listeners.size);
@@ -106,8 +97,7 @@ wss.on('connection', (ws) => {
   });
 });
 
-// Простой эндпоинт для проверки
-app.get('/', (req, res) => res.send('Discord Audio Relay работает'));
+app.get('/', (req, res) => res.sendFile(__dirname + '/index.html'));
 app.get('/health', (req, res) => res.send('ok'));
 
 server.listen(WS_PORT, () => {
